@@ -29,6 +29,11 @@ class VGGTOmega(nn.Module):
     ) -> None:
         super().__init__()
 
+        # Match Any4D's inference-side Tensor-Core setting.  BF16 paths remain
+        # unchanged; this accelerates eligible fp32 planner/GEMM operations.
+        if torch.cuda.is_available() and hasattr(torch.backends.cuda.matmul, "allow_tf32"):
+            torch.backends.cuda.matmul.allow_tf32 = True
+
         self.autocast = autocast
         self.aggregator = Aggregator(patch_size=patch_size, embed_dim=embed_dim, use_checkpoint=use_checkpoint)
         _warn_if_rope_not_max(self.aggregator)

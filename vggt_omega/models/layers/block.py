@@ -216,6 +216,15 @@ class SelfAttentionBlock(nn.Module):
         else:
             raise AssertionError
 
+    def forward_compacted(self, x: Tensor, token_plan, *, normalized: Tensor = None) -> Tensor:
+        """Inference-only Any4D-equivalent compact-Q/K/V attention block."""
+        if self.training:
+            raise RuntimeError("token compaction is inference-only")
+        if normalized is None:
+            normalized = self.norm1(x)
+        x_attn = x + self.ls1(self.attn(normalized, token_plan=token_plan))
+        return x_attn + self.ls2(self.mlp(self.norm2(x_attn)))
+
 
 class CausalSelfAttentionBlock(nn.Module):
     def __init__(

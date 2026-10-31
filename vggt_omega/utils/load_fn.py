@@ -12,12 +12,13 @@ from PIL import Image
 from torchvision import transforms as TF
 
 
-def load_and_preprocess_images(image_path_list, mode="balanced", image_resolution=512, patch_size=16):
+def load_and_preprocess_images(image_path_list, mode="balanced", image_resolution=512, patch_size=16, *, return_metadata=False):
     """Load images for VGGT-Omega inference.
 
     `balanced` keeps the total token count close to image_resolution**2.
     `max_size` resizes the longest side to image_resolution.
     Both modes first center-crop extreme aspect ratios into [0.5, 2.0].
+    Optionally return exact crop/resize/padding metadata for diagnostic maps.
     """
     if len(image_path_list) == 0:
         raise ValueError("At least 1 image is required")
@@ -31,11 +32,14 @@ def load_and_preprocess_images(image_path_list, mode="balanced", image_resolutio
         raise ValueError("image_resolution must be divisible by patch_size")
 
     images = []
+    metadata = []
     shapes = set()
     to_tensor = TF.ToTensor()
 
     for image_path in image_path_list:
-        image = _crop_to_supported_aspect_ratio(_load_rgb_image(image_path))
+        original = _load_rgb_image(image_path)
+        crop_box = _supported_crop_box(original.size)
+        image = original.crop(crop_box)
         width, height = image.size
         aspect_ratio = height / max(width, 1)
 
@@ -49,12 +53,21 @@ def load_and_preprocess_images(image_path_list, mode="balanced", image_resolutio
 
         shapes.add((image.shape[1], image.shape[2]))
         images.append(image)
+        metadata.append({"original_size": list(original.size), "crop_box": list(crop_box),
+                         "resized_size": [target_w, target_h]})
 
     if len(shapes) > 1:
         warnings.warn(f"Found images with different shapes: {shapes}; padding to a common size.", stacklevel=2)
         images = _pad_images_to_common_size(images, shapes)
 
-    return torch.stack(images)
+    result = torch.stack(images)
+    canvas_h, canvas_w = result.shape[-2:]
+    for item in metadata:
+        resized_w, resized_h = item["resized_size"]
+        left, top = (canvas_w - resized_w) // 2, (canvas_h - resized_h) // 2
+        item["canvas_size"] = [canvas_w, canvas_h]
+        item["content_box"] = [left, top, left + resized_w, top + resized_h]
+    return (result, metadata) if return_metadata else result
 
 
 def _load_rgb_image(image_path):
@@ -66,20 +79,24 @@ def _load_rgb_image(image_path):
 
 
 def _crop_to_supported_aspect_ratio(image, min_aspect_ratio=0.5, max_aspect_ratio=2.0):
-    width, height = image.size
+    return image.crop(_supported_crop_box(image.size, min_aspect_ratio, max_aspect_ratio))
+
+
+def _supported_crop_box(size, min_aspect_ratio=0.5, max_aspect_ratio=2.0):
+    width, height = size
     aspect_ratio = height / max(width, 1)
 
     if aspect_ratio < min_aspect_ratio:
         crop_width = min(width, max(1, int(round(height / min_aspect_ratio))))
         left = max((width - crop_width) // 2, 0)
-        return image.crop((left, 0, left + crop_width, height))
+        return (left, 0, left + crop_width, height)
 
     if aspect_ratio > max_aspect_ratio:
         crop_height = min(height, max(1, int(round(width * max_aspect_ratio))))
         top = max((height - crop_height) // 2, 0)
-        return image.crop((0, top, width, top + crop_height))
+        return (0, top, width, top + crop_height)
 
-    return image
+    return (0, 0, width, height)
 
 
 def _balanced_target_shape(aspect_ratio, image_resolution, patch_size):
